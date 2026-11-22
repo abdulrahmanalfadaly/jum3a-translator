@@ -1,8 +1,14 @@
 package com.jum3a.livetranslate.session
 
 import android.content.Context
+import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioRecordingConfiguration
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import com.jum3a.livetranslate.ai.AsrFilter
+import com.jum3a.livetranslate.ai.AsrResult
 import com.jum3a.livetranslate.ai.GroqClient
 import com.jum3a.livetranslate.ai.GroqException
 import com.jum3a.livetranslate.ai.Translator
@@ -10,10 +16,13 @@ import com.jum3a.livetranslate.audio.AudioCapture
 import com.jum3a.livetranslate.audio.AudioUtil
 import com.jum3a.livetranslate.audio.MicConfig
 import com.jum3a.livetranslate.audio.OpenedMic
+import com.jum3a.livetranslate.audio.Resampler
 import com.jum3a.livetranslate.audio.Segment
 import com.jum3a.livetranslate.audio.Segmenter
 import com.jum3a.livetranslate.audio.SegmenterParams
 import com.jum3a.livetranslate.settings.AppSettings
+import com.jum3a.livetranslate.settings.Defaults
+import com.jum3a.livetranslate.settings.MicSource
 import com.jum3a.livetranslate.settings.SettingsStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -38,7 +47,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
 
 enum class EntryStatus { QUEUED, TRANSCRIBING, TRANSLATING, DONE, FAILED }
 
@@ -57,6 +68,10 @@ data class Meter(
     val thresholdDb: Float = -60f,
     val speaking: Boolean = false,
     val capturingMs: Int = 0,
+    /** Background level the app has learned. */
+    val noiseDb: Float = -90f,
+    /** The speaker's typical level, once known. */
+    val voiceDb: Float? = null,
 )
 
 data class EngineState(
@@ -64,13 +79,16 @@ data class EngineState(
     val micInfo: String = "",
     val lastBoostDb: Float? = null,
     val error: String? = null,
+    /** Network and free-limit messages. */
     val notice: String? = null,
+    /** Microphone advice: too loud, blocked, switching modes. */
+    val micHint: String? = null,
     val entries: List<Entry> = emptyList(),
 )
 
 /**
  * The live pipeline:
- *   microphone → [Segmenter] → utterance WAV → Whisper (Malay text) → LLM (English) → screen.
+ *   microphone → (resample to 16 kHz) → [Segmenter] → utterance WAV → Whisper (Malay text) → LLM (English) → screen.
  * Speech recognition and translation run as two queues so the next utterance can be
  * transcribed while the previous one is being translated.
  */
@@ -94,6 +112,10 @@ class Engine(
     private val ids = AtomicLong(0)
     private var captureJob: Job? = null
 
+    // Speech models that hit their free limit cool down; retired ones are skipped for the session.
+    private val asrCoolUntil = ConcurrentHashMap<String, Long>()
+    private val asrDead: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     @Volatile private var lastMalay = ""
     @Volatile private var transcriptFile: File? = null
 
@@ -111,7 +133,7 @@ class Engine(
             _state.update { it.copy(error = "Add your free Groq API key in Settings first.") }
             return false
         }
-        _state.update { it.copy(running = true, error = null, notice = null, micInfo = "Starting microphone…") }
+        _state.update { it.copy(running = true, error = null, notice = null, micHint = null, micInfo = "Starting microphone…") }
         captureJob = scope.launch(Dispatchers.IO) { capture(s) }
         return true
     }
@@ -160,40 +182,129 @@ class Engine(
     // ---------------------------------------------------------------- capture
 
     private suspend fun capture(s: AppSettings) {
-        var mic: OpenedMic? = null
         val startWall = System.currentTimeMillis()
         val segmenter = Segmenter(
             AudioCapture.SAMPLE_RATE,
             SegmenterParams(
-                sensitivity = s.sensitivity,
-                minSegMs = (s.minSegSec * 1000).toInt(),
-                maxSegMs = (maxOf(s.maxSegSec, s.minSegSec + 2f) * 1000).toInt(),
+                sensitivity = if (s.autoSensitivity) null else s.sensitivity,
+                minSegMs = s.pace.minSegMs,
+                maxSegMs = s.pace.maxSegMs,
             ),
-        ) { seg -> onSegment(seg, startWall, s) }
+        ) { seg -> onSegment(seg, startWall) }
+        val config = MicConfig(s.micSource, s.testedSource, s.inputDeviceId, s.phoneProcessing)
+        val am = app.getSystemService(AudioManager::class.java)
+
+        val silentSources = mutableSetOf<MicSource>()
+        var allSilent = false
+        val devicesChanged = AtomicBoolean(false)
+        val silenced = AtomicBoolean(false)
+        val stopWatchingDevices = AudioCapture.watchDevices(app) { devicesChanged.set(true) }
+        var recordingCb: AudioManager.AudioRecordingCallback? = null
+        var mic: OpenedMic? = null
 
         try {
-            val opened = AudioCapture.open(app, MicConfig(s.micSource, s.inputDeviceId, s.phoneAgc, s.noiseSuppression))
-            mic = opened
-            val rec = opened.record
-            rec.startRecording()
-            if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                error("The microphone is busy. Close other apps that may be recording and try again.")
-            }
-            _state.update { it.copy(micInfo = opened.description) }
+            val frame = ShortArray(segmenter.frameSize)
+            var frameFill = 0
+            var meterTick = 0
+            var chunks = 0L
 
-            val buf = ShortArray(segmenter.frameSize)
-            var frames = 0
             while (currentCoroutineContext().isActive) {
-                var filled = 0
-                while (filled < buf.size) {
-                    val n = rec.read(buf, filled, buf.size - filled)
-                    if (n < 0) error("Microphone stopped working (code $n).")
-                    filled += n
+                // Open the best mode that hasn't been silent. If every mode was silent, stay on the
+                // first one and keep advising the user rather than giving up.
+                val opened = try {
+                    AudioCapture.open(app, config, if (allSilent) emptySet() else silentSources)
+                } catch (e: IllegalStateException) {
+                    if (allSilent || silentSources.isEmpty()) throw e
+                    allSilent = true // the remaining modes won't open: go back to the first one
+                    _state.update { it.copy(micHint = NO_SOUND_HINT) }
+                    continue
                 }
-                val st = segmenter.process(buf, filled)
-                if (++frames % 2 == 0) {
-                    _meter.value = Meter(st.db, st.thresholdDb, st.speaking, st.capturingMs)
+                mic = opened
+                val rec = opened.record
+                rec.startRecording()
+                if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                    error("The microphone is busy. Close other apps that may be recording and try again.")
                 }
+                silenced.set(false)
+                recordingCb = watchSilencing(am, rec, silenced)
+                _state.update { it.copy(micInfo = opened.description) }
+
+                val resampler = Resampler(opened.sampleRate, AudioCapture.SAMPLE_RATE)
+                val chunk = ShortArray(opened.sampleRate * Segmenter.FRAME_MS / 1000)
+                var heardAnything = false
+                var zeroMs = 0
+                var clipChunks = 0
+
+                reading@ while (currentCoroutineContext().isActive) {
+                    var filled = 0
+                    while (filled < chunk.size) {
+                        val n = rec.read(chunk, filled, chunk.size - filled)
+                        if (n < 0) error("Microphone stopped working (code $n).")
+                        filled += n
+                    }
+
+                    // Raw-signal checks: pure digital silence (blocked/broken mode) and clipping.
+                    var peak = 0
+                    var clipped = 0
+                    for (i in 0 until filled) {
+                        val a = abs(chunk[i].toInt())
+                        if (a > peak) peak = a
+                        if (a >= CLIP_LEVEL) clipped++
+                    }
+                    if (peak > 0) heardAnything = true
+                    zeroMs = if (peak == 0 && !silenced.get()) zeroMs + Segmenter.FRAME_MS else 0
+                    if (clipped > filled / 100) clipChunks++
+
+                    if (!heardAnything && !allSilent && zeroMs >= SILENT_SWITCH_MS) {
+                        silentSources += opened.source
+                        if (AudioCapture.candidates(app, config, silentSources).isEmpty()) allSilent = true
+                        _state.update { it.copy(micHint = if (allSilent) NO_SOUND_HINT else "No sound from ${opened.source.short}, trying another mode…") }
+                        break@reading
+                    }
+
+                    if (++chunks % HINT_WINDOW_CHUNKS == 0L) {
+                        val hint = when {
+                            silenced.get() -> SILENCED_HINT
+                            !heardAnything -> NO_SOUND_HINT.takeIf { allSilent || zeroMs >= SILENT_SWITCH_MS }
+                            clipChunks >= 3 -> TOO_LOUD_HINT
+                            else -> null
+                        }
+                        clipChunks = 0
+                        if (_state.value.micHint != hint) _state.update { it.copy(micHint = hint) }
+                        // Recognition falling behind (slow internet, free limit): send fewer, longer chunks.
+                        val backlog = _state.value.entries.count {
+                            it.status == EntryStatus.QUEUED || it.status == EntryStatus.TRANSCRIBING
+                        }
+                        segmenter.stretch = when {
+                            backlog >= 3 -> 1.5f
+                            backlog <= 1 -> 1f
+                            else -> segmenter.stretch
+                        }
+                    }
+
+                    // Convert to 16 kHz and feed whole 30 ms frames to the segmenter.
+                    for (v in resampler.process(chunk, filled)) {
+                        frame[frameFill++] = v
+                        if (frameFill == frame.size) {
+                            frameFill = 0
+                            val st = segmenter.process(frame, frame.size)
+                            if (++meterTick % 2 == 0) {
+                                _meter.value = Meter(st.db, st.thresholdDb, st.speaking, st.capturingMs, st.noiseDb, st.voiceDb)
+                            }
+                        }
+                    }
+
+                    // A USB mic was plugged in or removed: reopen on the right device.
+                    if (devicesChanged.getAndSet(false) &&
+                        AudioCapture.preferredDeviceId(app, config.deviceId) != opened.deviceId
+                    ) {
+                        break@reading
+                    }
+                }
+                recordingCb?.let { runCatching { am.unregisterAudioRecordingCallback(it) } }
+                recordingCb = null
+                opened.release()
+                mic = null
             }
         } catch (e: CancellationException) {
             // Normal stop.
@@ -201,14 +312,30 @@ class Engine(
             _state.update { it.copy(error = e.message ?: "Microphone error") }
         } finally {
             runCatching { segmenter.flush() }
+            recordingCb?.let { runCatching { am.unregisterAudioRecordingCallback(it) } }
+            stopWatchingDevices()
             mic?.release()
             _meter.value = Meter()
-            _state.update { it.copy(running = false) }
+            _state.update { it.copy(running = false, micHint = null) }
         }
     }
 
-    private fun onSegment(seg: Segment, startWall: Long, s: AppSettings) {
-        val norm = AudioUtil.normalize(seg.samples, seg.speechRms, s.maxBoostDb)
+    /** Android 10+ tells us when another app (a call, a recorder) has taken the microphone. */
+    private fun watchSilencing(am: AudioManager, rec: AudioRecord, silenced: AtomicBoolean): AudioManager.AudioRecordingCallback? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        val session = rec.audioSessionId
+        val cb = object : AudioManager.AudioRecordingCallback() {
+            override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
+                configs.firstOrNull { it.clientAudioSessionId == session }?.let { silenced.set(it.isClientSilenced) }
+            }
+        }
+        am.registerAudioRecordingCallback(cb, Handler(Looper.getMainLooper()))
+        rec.activeRecordingConfiguration?.let { silenced.set(it.isClientSilenced) }
+        return cb
+    }
+
+    private fun onSegment(seg: Segment, startWall: Long) {
+        val norm = AudioUtil.normalize(seg.samples, seg.speechRms, MAX_BOOST_DB)
         val wav = AudioUtil.wav(norm.pcm, seg.sampleRate)
         val id = ids.incrementAndGet()
 
@@ -241,9 +368,7 @@ class Engine(
             updateEntry(id) { it.copy(status = EntryStatus.TRANSCRIBING, error = null) }
             try {
                 val prompt = whisperPrompt(s)
-                val result = withRetry {
-                    groq.transcribe(s.apiKey, wav, s.asrModel, s.language.takeIf { it != "auto" }, prompt)
-                }
+                val result = transcribe(s, wav, prompt)
                 audio.remove(id)
                 val text = AsrFilter.clean(result, prompt)
                 if (text.isBlank()) {
@@ -285,30 +410,52 @@ class Engine(
         }
     }
 
-    private suspend fun <T> withRetry(block: suspend () -> T): T {
-        var attempt = 0
+    /**
+     * Speech recognition with automatic fallback: if the main Whisper model hits its free limit,
+     * the backup model (separate quota) is used until the main one is available again.
+     */
+    private suspend fun transcribe(s: AppSettings, wav: ByteArray, prompt: String): AsrResult {
+        val language = s.language.takeIf { it != "auto" }
+        var failures = 0
+        var limitWaits = 0
+        var lastError: Exception? = null
         while (true) {
+            val now = System.currentTimeMillis()
+            val live = Defaults.ASR_MODELS.filter { it !in asrDead }
+            if (live.isEmpty()) throw lastError ?: IOException("Speech recognition isn't available on Groq right now.")
+            val model = live.firstOrNull { (asrCoolUntil[it] ?: 0L) <= now }
+            if (model == null) {
+                // Every model is at its free limit: wait for the first one to come back.
+                if (++limitWaits > 3) throw lastError ?: IOException("Groq's free limit was reached.")
+                val waitMs = (live.minOf { asrCoolUntil[it] ?: now } - now).coerceIn(1_000L, 60_000L)
+                _state.update { it.copy(notice = "Groq free limit reached — waiting ${(waitMs + 999) / 1000}s…") }
+                delay(waitMs)
+                continue
+            }
             try {
-                val result = block()
+                val result = groq.transcribe(s.apiKey, wav, model, language, prompt)
                 if (_state.value.notice != null) _state.update { it.copy(notice = null) }
                 return result
             } catch (e: GroqException) {
-                attempt++
-                if (e.isAuth || (e.httpCode in 400..499 && !e.isRateLimit) || attempt >= 4) throw e
-                val waitMs = if (e.isRateLimit) {
-                    ((e.retryAfterSec ?: 10.0).coerceIn(1.0, 60.0) * 1000).toLong()
-                } else {
-                    1500L * attempt
+                lastError = e
+                when {
+                    e.isAuth -> throw e
+                    e.isRateLimit -> {
+                        val coolSec = (e.retryAfterSec ?: 20.0).coerceIn(2.0, 300.0)
+                        asrCoolUntil[model] = System.currentTimeMillis() + (coolSec * 1000).toLong()
+                    }
+                    e.isModelUnavailable -> asrDead += model
+                    e.httpCode in 400..499 -> throw e
+                    else -> {
+                        if (++failures >= 4) throw e
+                        delay(1500L * failures)
+                    }
                 }
-                if (e.isRateLimit) {
-                    _state.update { it.copy(notice = "Groq free limit reached — waiting ${waitMs / 1000}s…") }
-                }
-                delay(waitMs)
             } catch (e: IOException) {
-                attempt++
-                if (attempt >= 4) throw e
+                lastError = e
+                if (++failures >= 4) throw e
                 _state.update { it.copy(notice = "Connection problem — retrying…") }
-                delay(2000L * attempt)
+                delay(2000L * failures)
             }
         }
     }
@@ -349,5 +496,20 @@ class Engine(
 
     companion object {
         private const val MAX_BACKLOG = 40
+        /** Soft voices are boosted up to this much; the limiter stops loud ones clipping. */
+        private const val MAX_BOOST_DB = 40f
+        private const val CLIP_LEVEL = 32_000
+        /** A mode that gives nothing but zeros for this long from the start is treated as not working. */
+        private const val SILENT_SWITCH_MS = 4_000
+        /** Hints are re-evaluated every ~3 s. */
+        private const val HINT_WINDOW_CHUNKS = 100
+
+        private const val NO_SOUND_HINT =
+            "The microphone gives no sound. Check that microphone access is on " +
+                "(quick settings → Microphone access) and that no call or recorder app is using it."
+        private const val SILENCED_HINT =
+            "Another app (a call or recorder) is using the microphone. Translation continues when it stops."
+        private const val TOO_LOUD_HINT =
+            "Too loud: the sound is distorting. Move the phone a little further from the loudspeaker."
     }
 }

@@ -1,9 +1,9 @@
 package com.jum3a.livetranslate.audio
 
-import kotlin.math.PI
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sqrt
 
 class Segment(
@@ -19,13 +19,22 @@ class Segment(
 }
 
 class SegmenterParams(
-    /** 0..1, higher = quieter sounds count as speech. */
-    val sensitivity: Float,
+    /** null = automatic (adapts to the room and the speaker); otherwise 0..1, higher = quieter sounds count as speech. */
+    val sensitivity: Float?,
     val minSegMs: Int,
     val maxSegMs: Int,
 )
 
-class FrameStats(val db: Float, val thresholdDb: Float, val speaking: Boolean, val capturingMs: Int)
+class FrameStats(
+    val db: Float,
+    val thresholdDb: Float,
+    val speaking: Boolean,
+    val capturingMs: Int,
+    /** Background level the detector has learned, dBFS. */
+    val noiseDb: Float,
+    /** The speaker's typical level, dBFS, or null until enough speech has been heard. */
+    val voiceDb: Float?,
+)
 
 /**
  * Splits the continuous microphone stream into utterances of a few seconds each.
@@ -33,6 +42,9 @@ class FrameStats(val db: Float, val thresholdDb: Float, val speaking: Boolean, v
  * - An adaptive noise floor follows the room's background level (fans, crowd, loudspeaker hiss),
  *   so speech is detected relative to the room rather than at a fixed volume. This is what lets
  *   a soft-spoken lecturer still be picked up.
+ * - In automatic mode it also learns the speaker's level and puts the speech threshold between
+ *   the two: strict when the voice is far above the room (fewer false triggers), lenient when
+ *   the voice is faint or the room is noisy.
  * - Segments end at a natural pause once they are at least [SegmenterParams.minSegMs] long.
  *   The pause needed shrinks as the segment grows, and at [SegmenterParams.maxSegMs] we cut at
  *   the quietest moment of the last few seconds so words are not chopped in half.
@@ -44,21 +56,26 @@ class Segmenter(
 ) {
     val frameSize = sampleRate * FRAME_MS / 1000
 
+    /**
+     * Multiplies the chunk lengths. The engine raises it when recognition falls behind, so fewer,
+     * longer requests are sent until it catches up.
+     */
+    @Volatile var stretch: Float = 1f
+
+    private val minSegMs: Int get() = (params.minSegMs * stretch).toInt()
+    private val maxSegMs: Int get() = (params.maxSegMs * stretch).toInt()
+
     private class Frame(val data: FloatArray, val rms: Float, val speech: Boolean)
 
     // 90 Hz high-pass removes rumble, hum and handling noise that carry no speech.
-    private val hpAlpha: Float = run {
-        val rc = 1f / (2f * PI.toFloat() * 90f)
-        val dt = 1f / sampleRate
-        rc / (rc + dt)
-    }
-    private var hpPrevIn = 0f
-    private var hpPrevOut = 0f
+    private val highPass = HighPass(sampleRate, 90f)
 
-    private val sens = params.sensitivity.coerceIn(0f, 1f)
-    private val ratio = lerp(4.0f, 1.6f, sens)        // how far above the noise floor speech must be
-    private val absMin = lerp(0.0025f, 0.0002f, sens) // never treat near-digital-silence as speech
+    private val sens: Float? = params.sensitivity?.coerceIn(0f, 1f)
+    private val ratio = lerp(4.0f, 1.6f, sens ?: 0.65f)        // manual: how far above the noise floor speech must be
+    private val absMin = if (sens == null) AUTO_ABS_MIN else lerp(0.0025f, 0.0002f, sens) // never treat near-silence as speech
     private var noiseFloor = -1f
+    private var voiceDb = Float.NaN
+    private var voiceFrames = 0
 
     private val preRoll = ArrayDeque<Frame>()
     private val seg = ArrayList<Frame>()
@@ -72,23 +89,40 @@ class Segmenter(
         val data = FloatArray(count)
         var sumSq = 0.0
         for (i in 0 until count) {
-            val x = pcm[i] / 32768f
-            val y = hpAlpha * (hpPrevOut + x - hpPrevIn)
-            hpPrevIn = x
-            hpPrevOut = y
+            val y = highPass.next(pcm[i] / 32768f)
             data[i] = y
             sumSq += (y * y).toDouble()
         }
         val rms = if (count > 0) sqrt(sumSq / count).toFloat() else 0f
 
         val floor = if (noiseFloor < 0f) rms else noiseFloor
-        val threshold = max(floor * ratio, absMin)
+        val threshold = if (sens == null) autoThreshold(floor) else max(floor * ratio, absMin)
         val speech = noiseFloor >= 0f && rms > threshold
+        if (speech && sens == null) {
+            // Learn the speaker's level from speech frames (~1 s of speech to adapt).
+            voiceDb += (toDb(rms) - voiceDb) * VOICE_ADAPT
+            voiceFrames++
+        }
         updateNoiseFloor(rms)
 
         handle(Frame(data, rms, speech))
         framesSeen++
-        return FrameStats(toDb(rms), toDb(threshold), speech, if (inSegment) seg.size * FRAME_MS else 0)
+        return FrameStats(
+            db = toDb(rms),
+            thresholdDb = toDb(threshold),
+            speaking = speech,
+            capturingMs = if (inSegment) seg.size * FRAME_MS else 0,
+            noiseDb = toDb(floor),
+            voiceDb = if (voiceFrames >= VOICE_KNOWN_FRAMES) voiceDb else null,
+        )
+    }
+
+    /** Threshold between the room and the voice: 40% of the way up, at least 4 dB and at most 12 dB above the room. */
+    private fun autoThreshold(floor: Float): Float {
+        val floorDb = toDb(floor)
+        if (voiceDb.isNaN()) voiceDb = floorDb + 15f // assume a fairly clear voice until we've heard one
+        val margin = (0.4f * (voiceDb - floorDb)).coerceIn(4f, 12f)
+        return max(fromDb(floorDb + margin), absMin)
     }
 
     /** Emit whatever speech is buffered (called when the user presses Stop). */
@@ -128,13 +162,15 @@ class Segmenter(
         val durMs = seg.size * FRAME_MS
         val silenceMs = silenceRun * FRAME_MS
 
-        if (durMs >= params.minSegMs) {
-            val span = max(1, params.maxSegMs - params.minSegMs)
-            val progress = ((durMs - params.minSegMs).toFloat() / span).coerceIn(0f, 1f)
+        val minMs = minSegMs
+        val maxMs = maxSegMs
+        if (durMs >= minMs) {
+            val span = max(1, maxMs - minMs)
+            val progress = ((durMs - minMs).toFloat() / span).coerceIn(0f, 1f)
             val neededPause = lerp(600f, 210f, progress)
             when {
                 silenceMs >= neededPause -> emit(seg.size)
-                durMs >= params.maxSegMs -> emit(bestCutIndex())
+                durMs >= maxMs -> emit(bestCutIndex())
             }
         } else if (silenceMs >= LONG_PAUSE_MS) {
             // A short phrase followed by a long pause: send it now instead of waiting.
@@ -144,7 +180,7 @@ class Segmenter(
 
     /** Quietest point in the last few seconds: the least likely place to split a word. */
     private fun bestCutIndex(): Int {
-        val lo = max(max(1, params.minSegMs / FRAME_MS / 2), seg.size - SEARCH_BACK_FRAMES)
+        val lo = max(max(1, minSegMs / FRAME_MS / 2), seg.size - SEARCH_BACK_FRAMES)
         val hi = seg.size - 3
         if (lo >= hi) return seg.size
         var best = seg.size
@@ -209,8 +245,12 @@ class Segmenter(
         private const val LONG_PAUSE_MS = 1500
         private const val MIN_SPEECH_MS = 450
         private const val SEARCH_BACK_FRAMES = 100   // look back 3 s for a cut point
+        private const val AUTO_ABS_MIN = 0.0002f     // -74 dBFS: below this it's never speech
+        private const val VOICE_ADAPT = 0.03f
+        private const val VOICE_KNOWN_FRAMES = 30    // ~1 s of speech before we report the voice level
 
         fun toDb(x: Float): Float = 20f * log10(max(x, 1e-6f))
+        fun fromDb(db: Float): Float = 10f.pow(db / 20f)
         private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
     }
 }

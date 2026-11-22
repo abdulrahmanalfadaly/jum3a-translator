@@ -3,11 +3,17 @@
 Live **Malay → English** translation for Android, built for sitting in a Friday khutbah or a Malay lecture
 and following along in English.
 
-- **Hears far-away and soft speakers:** records the raw microphone signal at 16 kHz with phone-side
-  processing switched off, tracks the room's noise floor so quiet voices still count as speech,
-  and boosts each sentence up to +30 dB (adjustable) with a soft limiter instead of hard clipping.
-- **Accurate Malay recognition:** OpenAI Whisper large-v3 via Groq's free API, with a vocabulary hint
-  and the previous sentence as context, plus a filter for Whisper's typical silence "hallucinations".
+- **Tunes itself to the room:** learns the background noise and the speaker's voice level and puts the
+  speech threshold between them, boosts soft voices up to +40 dB with a soft limiter, and sends longer
+  chunks automatically if recognition falls behind. Nothing to adjust by hand.
+- **Works on any phone and mic:** records the raw microphone signal with phone-side processing off
+  when the phone allows it; falls back through other microphone modes and sample rates (converting
+  to 16 kHz) when it doesn't; switches mode by itself if one gives no sound; uses a plugged-in USB mic
+  automatically; warns when the sound distorts or another app takes the mic.
+  *Find the best microphone* compares every mode on your phone during the talk and keeps the clearest.
+- **Accurate Malay recognition:** OpenAI Whisper large-v3 via Groq's free API (falling back to
+  large-v3-turbo when the free limit is hit), with a vocabulary hint for the type of talk and the
+  previous sentence as context, plus a filter for Whisper's typical silence "hallucinations".
 - **Proper translation, not word-for-word:** an LLM (GPT-OSS 120B on Groq, with automatic fallback to
   other free models) translates each sentence using the previous ones as context, fixes
   mis-heard words, keeps Islamic terms recognisable and marks Arabic recitation.
@@ -25,15 +31,19 @@ and following along in English.
 
 Tips for the mosque/lecture hall:
 - Point the bottom of the phone (where the mic is) toward the nearest loudspeaker and keep it uncovered.
-- The level bar should cross the yellow tick when the speaker talks. If it doesn't, raise
-  *Speech sensitivity*; if background noise keeps triggering it, lower it.
-- If the speaker is far away, try *Microphone mode → Far-field (camcorder)*.
+- In *Settings*, pick what you're listening to (khutbah, Islamic talk, lecture…) and optionally add
+  names or words to expect.
+- At your first talk, run *Settings → Find the best microphone* while the speaker is talking.
+- The status line shows *Sound: clear / OK / weak*. If it's weak, move closer to a loudspeaker or use
+  a clip-on USB-C microphone.
 
 ## Free-tier limits (Groq)
 
-Roughly 2,000 speech requests and 2 hours of audio per day, and per-model daily token limits for
-translation. A 20–60 minute talk fits comfortably. If a translation model hits its limit, the app
-switches to the next model in *Settings → Advanced AI settings*.
+Groq's published limits for each Whisper model are about 2,000 requests per day, 2 hours of audio
+per hour and 8 hours per day, and every request counts as at least 10 seconds of audio. The
+*Balanced* speed keeps chunks around 10 s so little quota is wasted. When the main Whisper model
+hits its limit the app switches to the turbo model; translation models fall back the same way.
+Check your own key's limits at console.groq.com → Settings → Limits.
 
 ## Development loop
 
@@ -48,18 +58,23 @@ edit code → git push → GitHub Actions builds "build-N" → phone: Update →
   **Back up `keystore/` and `keystore.properties`** — if the key is lost, the phone can't install
   updates over the existing app (you'd have to uninstall first).
 - Local build: `./gradlew assembleRelease` (uses Android Studio's bundled JDK as `JAVA_HOME`).
+  Because this folder is in OneDrive, which locks files mid-build, build output goes to
+  `~/.gradle-builds/Jum3aTranslate/` instead of `app/build/`.
+- CI runs the unit tests before building, so a failing change is never published to phones.
 
 ## Code map
 
 | Path | What it does |
 |---|---|
-| `audio/AudioCapture.kt` | Opens the mic (raw/unprocessed if supported), disables phone AGC/NS/AEC by default |
-| `audio/Segmenter.kt` | Adaptive voice detection; cuts speech into 6–15 s chunks at natural pauses |
+| `audio/AudioCapture.kt` | Opens the best mic mode/sample rate the phone supports, picks USB mics, watches plug/unplug |
+| `audio/Resampler.kt` | Converts 48/44.1/32/22 kHz recordings to 16 kHz for Whisper |
+| `audio/MicTest.kt` | "Find the best microphone": compares each mode's clarity |
+| `audio/Segmenter.kt` | Self-tuning voice detection; cuts speech into chunks at natural pauses |
 | `audio/AudioUtil.kt` | Loudness normalisation with soft limiter, WAV encoding |
 | `ai/GroqClient.kt` | Groq API: Whisper transcription, chat completions, model list |
 | `ai/AsrFilter.kt` | Drops silence hallucinations ("Terima kasih kerana menonton", …) |
 | `ai/Translator.kt` | Context-aware translation prompt, model fallback and rate-limit cooldown |
-| `session/Engine.kt` | Pipeline: mic → chunks → transcription queue → translation queue → UI |
+| `session/Engine.kt` | Pipeline: mic → chunks → transcription queue → translation queue → UI; mic recovery and hints |
 | `session/TranslateService.kt` | Foreground service so it keeps listening with the screen off |
 | `update/UpdateManager.kt` | Checks GitHub releases, downloads and installs updates |
 | `ui/` | Jetpack Compose screens |

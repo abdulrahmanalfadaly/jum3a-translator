@@ -20,14 +20,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
 
-      - uses: gradle/actions/setup-gradle@v4
+      # v5 on purpose: v6 makes its caching part proprietary with separate terms of use.
+      - uses: gradle/actions/setup-gradle@v5
 
       # Build number = run number + 1, so CI builds always outrank a local "build 1" APK.
       - name: Set build number
@@ -42,7 +43,8 @@ jobs:
           fi
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
 
-      - name: Build release APK
+      # Unit tests run first: a failing build is never published to phones.
+      - name: Test and build release APK
         env:
           BUILD_NUMBER: ${{ env.BUILD }}
           SIGNING_STORE_FILE: ${{ runner.temp }}/release.jks
@@ -51,7 +53,7 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
+          ./gradlew testDebugUnitTest assembleRelease --stacktrace
 
       - name: Publish release
         env:

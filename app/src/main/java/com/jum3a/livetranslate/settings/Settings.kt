@@ -6,43 +6,76 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-enum class MicSource(val title: String, val detail: String) {
-    AUTO("Auto (recommended)", "Raw microphone if the phone supports it, otherwise speech-recognition mode. The app boosts quiet voices itself."),
-    UNPROCESSED("Raw / unprocessed", "Full microphone range with no phone filtering at all."),
-    VOICE_RECOGNITION("Speech recognition", "Clean, lightly processed signal tuned for speech-to-text."),
-    CAMCORDER("Far-field (camcorder)", "Tuned for distant sound; often uses the back microphone. Try it if the speaker is far away."),
-    MIC("Standard", "The phone's default microphone processing."),
+enum class MicSource(val title: String, val short: String, val detail: String) {
+    AUTO(
+        "Automatic (recommended)", "Auto",
+        "Uses the mode that works best on this phone, and switches by itself if one gives no sound.",
+    ),
+    UNPROCESSED("Raw microphone", "Raw mic", "Full microphone range with no phone filtering."),
+    VOICE_RECOGNITION("Speech mode", "Speech mic", "Lightly cleaned signal tuned for speech-to-text."),
+    CAMCORDER("Far-field mode", "Far-field mic", "Tuned for distant sound; often uses the back microphone."),
+    MIC("Standard mode", "Standard mic", "The phone's default microphone processing."),
+}
+
+/** What kind of talk it is: sets the context the AI gets for recognition and translation. */
+enum class TalkType(val title: String, val detail: String, val topic: String, val hint: String) {
+    KHUTBAH(
+        "Friday khutbah", "Jumaat sermon at the mosque",
+        "Friday khutbah (sermon) at a mosque in Malaysia, delivered in Malay over a loudspeaker. " +
+            "It includes Arabic Quran verses, hadith and du'a.",
+        "Khutbah Jumaat. Sidang Jumaat yang dirahmati Allah sekalian, marilah kita bertakwa kepada Allah SWT. " +
+            "Sabda Rasulullah SAW.",
+    ),
+    KULIAH(
+        "Islamic talk or class", "Kuliah, ceramah or tazkirah",
+        "Islamic religious talk (kuliah, ceramah or tazkirah) in Malay at a mosque or surau in Malaysia. " +
+            "The speaker may quote the Quran and hadith in Arabic and tell stories.",
+        "Kuliah agama. Tuan-tuan dan puan-puan yang dirahmati Allah. Firman Allah SWT, sabda Nabi SAW, insya-Allah.",
+    ),
+    UNIVERSITY(
+        "University lecture", "Academic class taught in Malay",
+        "University lecture in Malaysia taught in Malay. Technical and academic terms may be said in English.",
+        "Kuliah universiti. Baiklah pelajar sekalian, hari ini kita akan belajar tentang",
+    ),
+    GENERAL(
+        "Other talk or meeting", "Speech, briefing or event in Malay",
+        "A talk, speech or meeting in Malay in Malaysia.",
+        "Assalamualaikum dan salam sejahtera. Tuan-tuan dan puan-puan, saya ingin menyentuh tentang",
+    ),
+}
+
+/** Trade-off between how fast English appears and how much context the AI gets. */
+enum class Pace(val title: String, val detail: String, val minSegMs: Int, val maxSegMs: Int) {
+    FAST("Faster", "English appears sooner, in smaller pieces. Uses more of the free quota.", 6_000, 12_000),
+    BALANCED("Balanced (recommended)", "Good translations with a short delay.", 9_000, 16_000),
+    ACCURATE("Most accurate", "Longer pieces give the AI more context; English comes a few seconds later.", 13_000, 24_000),
 }
 
 object Defaults {
-    const val TOPIC =
-        "Friday khutbah (sermon) or Islamic religious talk at a mosque in Malaysia. " +
-            "It may include Arabic Quran verses, hadith and du'a."
-    const val ASR_HINT =
-        "Khutbah Jumaat. Sidang Jumaat yang dirahmati Allah sekalian, marilah kita bertakwa kepada Allah SWT. " +
-            "Sabda Rasulullah SAW."
-    const val ASR_MODEL = "whisper-large-v3"
+    /** Tried in order; each has its own free quota on Groq, so the second extends the daily limit. */
+    val ASR_MODELS = listOf("whisper-large-v3", "whisper-large-v3-turbo")
     const val TRANSLATION_MODELS = "openai/gpt-oss-120b, openai/gpt-oss-20b, llama-3.3-70b-versatile"
 }
 
 data class AppSettings(
     val apiKey: String = "",
-    val topic: String = Defaults.TOPIC,
-    val asrHint: String = Defaults.ASR_HINT,
+    val talkType: TalkType = TalkType.KHUTBAH,
+    /** Optional names or words to expect (speaker, place, subject). Helps recognition and translation. */
+    val notes: String = "",
     /** "ms" to force Malay, "auto" to let the model detect the language. */
     val language: String = "ms",
-    val asrModel: String = Defaults.ASR_MODEL,
-    val translationModels: String = Defaults.TRANSLATION_MODELS,
+    val pace: Pace = Pace.BALANCED,
     val micSource: MicSource = MicSource.AUTO,
-    /** 0 = let Android pick the input device. */
+    /** Winner of "Find the best microphone"; used first by [MicSource.AUTO]. */
+    val testedSource: MicSource? = null,
+    /** 0 = automatic: an external USB mic if one is plugged in, otherwise the phone's mic. */
     val inputDeviceId: Int = 0,
-    val phoneAgc: Boolean = false,
-    val noiseSuppression: Boolean = false,
-    val maxBoostDb: Float = 30f,
-    /** 0..1, higher picks up quieter speech. */
+    val autoSensitivity: Boolean = true,
+    /** Manual sensitivity, 0..1, used only when [autoSensitivity] is off. */
     val sensitivity: Float = 0.65f,
-    val minSegSec: Float = 6f,
-    val maxSegSec: Float = 15f,
+    /** The phone's own gain control and noise reduction. Off: the app does its own, cleaner processing. */
+    val phoneProcessing: Boolean = false,
+    val translationModels: String = Defaults.TRANSLATION_MODELS,
     val fontScale: Float = 1.15f,
     val showMalay: Boolean = true,
     val keepScreenOn: Boolean = true,
@@ -50,6 +83,14 @@ data class AppSettings(
 ) {
     fun modelList(): List<String> =
         translationModels.split(',', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+
+    /** Context for the translator. */
+    val topic: String
+        get() = talkType.topic + notes.trim().takeIf { it.isNotEmpty() }?.let { " Notes from the listener: $it" }.orEmpty()
+
+    /** Vocabulary hint for Whisper. */
+    val asrHint: String
+        get() = (talkType.hint + " " + notes.trim()).trim()
 }
 
 class SettingsStore(context: Context) {
@@ -64,24 +105,28 @@ class SettingsStore(context: Context) {
         save(next)
     }
 
+    /** Back to defaults, keeping the API key. */
+    fun reset() = update { AppSettings(apiKey = it.apiKey) }
+
+    private inline fun <reified E : Enum<E>> enumPref(key: String, default: E): E =
+        prefs.getString(key, null)?.let { name -> runCatching { enumValueOf<E>(name) }.getOrNull() } ?: default
+
     private fun load(): AppSettings {
         val d = AppSettings()
         return AppSettings(
             apiKey = prefs.getString("apiKey", d.apiKey) ?: d.apiKey,
-            topic = prefs.getString("topic", d.topic) ?: d.topic,
-            asrHint = prefs.getString("asrHint", d.asrHint) ?: d.asrHint,
+            talkType = enumPref("talkType", d.talkType),
+            notes = prefs.getString("notes", d.notes) ?: d.notes,
             language = prefs.getString("language", d.language) ?: d.language,
-            asrModel = prefs.getString("asrModel", d.asrModel) ?: d.asrModel,
-            translationModels = prefs.getString("translationModels", d.translationModels) ?: d.translationModels,
-            micSource = runCatching { MicSource.valueOf(prefs.getString("micSource", d.micSource.name)!!) }
-                .getOrDefault(d.micSource),
+            pace = enumPref("pace", d.pace),
+            micSource = enumPref("micSource", d.micSource),
+            testedSource = prefs.getString("testedSource", null)
+                ?.let { runCatching { MicSource.valueOf(it) }.getOrNull() },
             inputDeviceId = prefs.getInt("inputDeviceId", d.inputDeviceId),
-            phoneAgc = prefs.getBoolean("phoneAgc", d.phoneAgc),
-            noiseSuppression = prefs.getBoolean("noiseSuppression", d.noiseSuppression),
-            maxBoostDb = prefs.getFloat("maxBoostDb", d.maxBoostDb),
+            autoSensitivity = prefs.getBoolean("autoSensitivity", d.autoSensitivity),
             sensitivity = prefs.getFloat("sensitivity", d.sensitivity),
-            minSegSec = prefs.getFloat("minSegSec", d.minSegSec),
-            maxSegSec = prefs.getFloat("maxSegSec", d.maxSegSec),
+            phoneProcessing = prefs.getBoolean("phoneProcessing", d.phoneProcessing),
+            translationModels = prefs.getString("translationModels", d.translationModels) ?: d.translationModels,
             fontScale = prefs.getFloat("fontScale", d.fontScale),
             showMalay = prefs.getBoolean("showMalay", d.showMalay),
             keepScreenOn = prefs.getBoolean("keepScreenOn", d.keepScreenOn),
@@ -91,19 +136,17 @@ class SettingsStore(context: Context) {
 
     private fun save(s: AppSettings) = prefs.edit {
         putString("apiKey", s.apiKey)
-        putString("topic", s.topic)
-        putString("asrHint", s.asrHint)
+        putString("talkType", s.talkType.name)
+        putString("notes", s.notes)
         putString("language", s.language)
-        putString("asrModel", s.asrModel)
-        putString("translationModels", s.translationModels)
+        putString("pace", s.pace.name)
         putString("micSource", s.micSource.name)
+        if (s.testedSource != null) putString("testedSource", s.testedSource.name) else remove("testedSource")
         putInt("inputDeviceId", s.inputDeviceId)
-        putBoolean("phoneAgc", s.phoneAgc)
-        putBoolean("noiseSuppression", s.noiseSuppression)
-        putFloat("maxBoostDb", s.maxBoostDb)
+        putBoolean("autoSensitivity", s.autoSensitivity)
         putFloat("sensitivity", s.sensitivity)
-        putFloat("minSegSec", s.minSegSec)
-        putFloat("maxSegSec", s.maxSegSec)
+        putBoolean("phoneProcessing", s.phoneProcessing)
+        putString("translationModels", s.translationModels)
         putFloat("fontScale", s.fontScale)
         putBoolean("showMalay", s.showMalay)
         putBoolean("keepScreenOn", s.keepScreenOn)

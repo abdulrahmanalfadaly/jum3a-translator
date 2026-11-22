@@ -307,20 +307,31 @@ private fun ControlPanel(state: EngineState, onStartStop: () -> Unit) {
                         color = if (meter.speaking) Mint else colors.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
-                    state.lastBoostDb?.let {
-                        Text(
-                            "Boost ${String.format(Locale.US, "%+.0f", it)} dB",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = colors.onSurfaceVariant,
-                        )
+                    // How far the speaker's voice stands out from the room, once the app has learned it.
+                    meter.voiceDb?.let { voice ->
+                        val snr = voice - meter.noiseDb
+                        val (label, color) = when {
+                            snr >= 18f -> "Sound: clear" to Mint
+                            snr >= 10f -> "Sound: OK" to colors.onSurfaceVariant
+                            else -> "Sound: weak" to colors.tertiary
+                        }
+                        Text(label, style = MaterialTheme.typography.labelMedium, color = color)
                     }
                 }
-                if (state.micInfo.isNotBlank()) {
+                val info = buildList {
+                    if (state.micInfo.isNotBlank()) add(state.micInfo)
+                    state.lastBoostDb?.let { add("boost ${String.format(Locale.US, "%+.0f", it)} dB") }
+                }.joinToString(" · ")
+                if (info.isNotBlank()) {
                     Text(
-                        state.micInfo,
+                        info,
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant.copy(alpha = 0.7f),
                     )
+                }
+                state.micHint?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, style = MaterialTheme.typography.labelMedium, color = colors.tertiary)
                 }
                 Spacer(Modifier.height(10.dp))
             }
