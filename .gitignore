@@ -1,0 +1,15 @@
+.gradle/
+.kotlin/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.DS_Store
+*.apk
+
+# Signing key: never commit. Back up the keystore/ folder somewhere safe.
+keystore/
+keystore.properties
+*.jks
+*.keystore
