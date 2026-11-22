@@ -116,7 +116,7 @@ class TranslateService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, App.CHANNEL_LIVE)
-            .setSmallIcon(R.drawable.ic_mic)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Translating Malay → English")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))

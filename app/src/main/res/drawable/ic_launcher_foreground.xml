@@ -1,20 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Microphone with sound waves, centred in the adaptive-icon safe zone. -->
+<!--
+  Jum3a logo: a gold eight-pointed star (Rub el Hizb) framing an emerald medallion, with a mihrab
+  arch inside holding a crescent and star. Sized for the adaptive-icon safe zone.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <group
-        android:scaleX="2.1"
-        android:scaleY="2.1"
-        android:translateX="28.8"
-        android:translateY="28.8">
-        <path
-            android:fillColor="#FFFFFF"
-            android:pathData="M12,14c1.66,0 2.99,-1.34 2.99,-3L15,5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 1.34,3 3,3zM17.3,11c0,3 -2.54,5.1 -5.3,5.1S6.7,14 6.7,11L5,11c0,3.41 2.72,6.23 6,6.72L11,21h2v-3.28c3.28,-0.48 6,-3.3 6,-6.72h-1.7z" />
-        <path
-            android:fillColor="#3DDC97"
-            android:pathData="M19.6,4.2l1.1,-1.1c1.6,1.6 2.4,3.6 2.4,5.7s-0.8,4.1 -2.4,5.7l-1.1,-1.1c1.3,-1.3 1.9,-2.9 1.9,-4.6s-0.6,-3.3 -1.9,-4.6zM4.4,4.2C3.1,5.5 2.5,7.1 2.5,8.8s0.6,3.3 1.9,4.6l-1.1,1.1C1.7,12.9 0.9,10.9 0.9,8.8s0.8,-4.1 2.4,-5.7z" />
-    </group>
+    <!-- Eight-pointed star: two overlapping squares -->
+    <path
+        android:fillColor="#D9B45A"
+        android:pathData="M54,22 L86,54 L54,86 L22,54 Z" />
+    <path
+        android:fillColor="#D9B45A"
+        android:pathData="M31.37,31.37 L76.63,31.37 L76.63,76.63 L31.37,76.63 Z" />
+    <!-- Emerald medallion -->
+    <path
+        android:fillColor="#0B3D2C"
+        android:pathData="M54,32.5 A21.5,21.5 0 1,1 54,75.5 A21.5,21.5 0 1,1 54,32.5 Z" />
+    <!-- Fine gold ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#D9B45A"
+        android:strokeWidth="1"
+        android:pathData="M54,35 A19,19 0 1,1 54,73 A19,19 0 1,1 54,35 Z" />
+    <!-- Mihrab arch -->
+    <path
+        android:fillColor="#D9B45A"
+        android:pathData="M45,68 L45,52 C45,45.5 50,42 54,37.5 C58,42 63,45.5 63,52 L63,68 Z" />
+    <!-- Crescent and star within the mihrab -->
+    <path
+        android:fillColor="#0B3D2C"
+        android:pathData="M56.04,51.83 A6,6 0 1,0 56.04,62.17 A5.2,5.2 0 1,1 56.04,51.83 Z" />
+    <path
+        android:fillColor="#0B3D2C"
+        android:pathData="M59.2,55.7 A1.3,1.3 0 1,1 59.2,58.3 A1.3,1.3 0 1,1 59.2,55.7 Z" />
 </vector>

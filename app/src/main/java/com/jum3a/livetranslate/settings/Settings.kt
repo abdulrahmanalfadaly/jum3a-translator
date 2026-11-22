@@ -20,25 +20,25 @@ enum class MicSource(val title: String, val short: String, val detail: String) {
 /** What kind of talk it is: sets the context the AI gets for recognition and translation. */
 enum class TalkType(val title: String, val detail: String, val topic: String, val hint: String) {
     KHUTBAH(
-        "Friday khutbah", "Jumaat sermon at the mosque",
+        "Khutbah", "Jumaat sermon at the mosque",
         "Friday khutbah (sermon) at a mosque in Malaysia, delivered in Malay over a loudspeaker. " +
             "It includes Arabic Quran verses, hadith and du'a.",
         "Khutbah Jumaat. Sidang Jumaat yang dirahmati Allah sekalian, marilah kita bertakwa kepada Allah SWT. " +
             "Sabda Rasulullah SAW.",
     ),
     KULIAH(
-        "Islamic talk or class", "Kuliah, ceramah or tazkirah",
+        "Kuliah", "Kuliah, ceramah or tazkirah",
         "Islamic religious talk (kuliah, ceramah or tazkirah) in Malay at a mosque or surau in Malaysia. " +
             "The speaker may quote the Quran and hadith in Arabic and tell stories.",
         "Kuliah agama. Tuan-tuan dan puan-puan yang dirahmati Allah. Firman Allah SWT, sabda Nabi SAW, insya-Allah.",
     ),
     UNIVERSITY(
-        "University lecture", "Academic class taught in Malay",
+        "Lecture", "Academic class taught in Malay",
         "University lecture in Malaysia taught in Malay. Technical and academic terms may be said in English.",
         "Kuliah universiti. Baiklah pelajar sekalian, hari ini kita akan belajar tentang",
     ),
     GENERAL(
-        "Other talk or meeting", "Speech, briefing or event in Malay",
+        "Other", "Speech, briefing or event in Malay",
         "A talk, speech or meeting in Malay in Malaysia.",
         "Assalamualaikum dan salam sejahtera. Tuan-tuan dan puan-puan, saya ingin menyentuh tentang",
     ),
@@ -46,9 +46,9 @@ enum class TalkType(val title: String, val detail: String, val topic: String, va
 
 /** Trade-off between how fast English appears and how much context the AI gets. */
 enum class Pace(val title: String, val detail: String, val minSegMs: Int, val maxSegMs: Int) {
-    FAST("Faster", "English appears sooner, in smaller pieces. Uses more of the free quota.", 6_000, 12_000),
-    BALANCED("Balanced (recommended)", "Good translations with a short delay.", 9_000, 16_000),
-    ACCURATE("Most accurate", "Longer pieces give the AI more context; English comes a few seconds later.", 13_000, 24_000),
+    FAST("Fast", "English appears sooner, in smaller pieces. Uses more of the free quota.", 6_000, 12_000),
+    BALANCED("Balanced", "Good translations with a short delay.", 9_000, 16_000),
+    ACCURATE("Accurate", "Longer pieces give the AI more context; English comes a few seconds later.", 13_000, 24_000),
 }
 
 object Defaults {

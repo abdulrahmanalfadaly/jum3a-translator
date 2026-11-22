@@ -14,7 +14,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -65,6 +68,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -133,7 +138,13 @@ fun MainScreen(onOpenSettings: () -> Unit) {
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("Jum3a Translate", fontWeight = FontWeight.SemiBold) },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(painterResource(R.drawable.ic_logo), contentDescription = null, modifier = Modifier.size(30.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text("Jum3a Translate")
+                    }
+                },
                 actions = {
                     IconButton(
                         onClick = { shareText(context, engine.exportText()) },
@@ -152,7 +163,7 @@ fun MainScreen(onOpenSettings: () -> Unit) {
         },
         bottomBar = { ControlPanel(state, onStartStop) },
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
+        Column(Modifier.padding(padding).fillMaxSize().starPattern()) {
             UpdateBanner(update)
             state.error?.let { MessageCard(it, onDismiss = engine::dismissError) }
             if (settings.apiKey.isBlank()) KeyMissingCard(onOpenSettings)
@@ -282,6 +293,12 @@ private fun ListeningFooter() {
 private fun ControlPanel(state: EngineState, onStartStop: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Surface(color = colors.surfaceContainer) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(Brush.horizontalGradient(listOf(Color.Transparent, Gold.copy(alpha = 0.5f), Color.Transparent))),
+        )
         Column(
             Modifier
                 .fillMaxWidth()
@@ -421,14 +438,9 @@ private fun UpdateBanner(update: UpdateState) {
 @Composable
 private fun KeyMissingCard(onOpenSettings: () -> Unit) {
     BannerCard {
-        Text("One-time setup: add a free Groq API key", fontWeight = FontWeight.SemiBold)
-        Text(
-            "Speech recognition and translation run on Groq's free AI. Getting a key takes about a minute.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Button(onClick = onOpenSettings) { Text("Open settings") }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Add your free Groq key", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Button(onClick = onOpenSettings) { Text("Settings") }
         }
     }
 }
@@ -437,6 +449,8 @@ private fun KeyMissingCard(onOpenSettings: () -> Unit) {
 private fun BannerCard(content: @Composable ColumnScope.() -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, Gold.copy(alpha = 0.35f)),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -463,13 +477,14 @@ private fun MessageCard(text: String, onDismiss: () -> Unit) {
 @Composable
 private fun EmptyHint(modifier: Modifier) {
     Column(modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(painterResource(R.drawable.ic_mic), contentDescription = null, tint = Mint, modifier = Modifier.size(48.dp))
-        Spacer(Modifier.height(12.dp))
-        Text("Ready when the talk starts", style = MaterialTheme.typography.titleMedium)
+        Image(painterResource(R.drawable.ic_logo), contentDescription = null, modifier = Modifier.size(112.dp))
+        Spacer(Modifier.height(18.dp))
+        Text("الجمعة", fontSize = 34.sp, color = Gold, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(6.dp))
+        Text("Ready when the talk starts", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Tap Start translating and point the bottom of your phone (the microphone) toward the nearest " +
-                "loudspeaker, uncovered. English appears a few seconds after each sentence.",
+            "Point the phone's microphone at the nearest loudspeaker.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
