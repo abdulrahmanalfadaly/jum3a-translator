@@ -102,6 +102,7 @@ import com.jum3a.livetranslate.settings.MicSource
 import com.jum3a.livetranslate.settings.Pace
 import com.jum3a.livetranslate.settings.SettingsStore
 import com.jum3a.livetranslate.settings.TalkType
+import com.jum3a.livetranslate.settings.TargetLang
 import com.jum3a.livetranslate.update.UpdateState
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -240,10 +241,8 @@ private fun TalkCard(s: AppSettings, store: SettingsStore) {
             maxLines = 3,
             modifier = Modifier.fillMaxWidth(),
         )
-        FieldLabel("Language")
-        Segmented(listOf("ms" to "Malay", "auto" to "Malay + English"), s.language) { v ->
-            store.update { it.copy(language = v) }
-        }
+        FieldLabel("Translate to")
+        Segmented(TargetLang.entries.map { it to it.title }, s.target) { v -> store.update { it.copy(target = v) } }
         FieldLabel("Speed")
         Segmented(Pace.entries.map { it to it.title }, s.pace) { v -> store.update { it.copy(pace = v) } }
     }

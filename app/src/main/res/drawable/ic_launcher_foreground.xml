@@ -1,39 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Jum3a logo: a gold eight-pointed star (Rub el Hizb) framing an emerald medallion, with a mihrab
-  arch inside holding a crescent and star. Sized for the adaptive-icon safe zone.
+  Jum3a logo: a gold eight-pointed star (Rub el Hizb, two interlaced squares) drawn as fine line art,
+  with a crescent moon at its centre. No background. Sized for the adaptive-icon safe zone.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Eight-pointed star: two overlapping squares -->
-    <path
-        android:fillColor="#D9B45A"
-        android:pathData="M54,22 L86,54 L54,86 L22,54 Z" />
-    <path
-        android:fillColor="#D9B45A"
-        android:pathData="M31.37,31.37 L76.63,31.37 L76.63,76.63 L31.37,76.63 Z" />
-    <!-- Emerald medallion -->
-    <path
-        android:fillColor="#0B3D2C"
-        android:pathData="M54,32.5 A21.5,21.5 0 1,1 54,75.5 A21.5,21.5 0 1,1 54,32.5 Z" />
-    <!-- Fine gold ring -->
     <path
         android:fillColor="#00000000"
         android:strokeColor="#D9B45A"
-        android:strokeWidth="1"
-        android:pathData="M54,35 A19,19 0 1,1 54,73 A19,19 0 1,1 54,35 Z" />
-    <!-- Mihrab arch -->
+        android:strokeWidth="3"
+        android:strokeLineJoin="miter"
+        android:pathData="M54,24 L84,54 L54,84 L24,54 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#D9B45A"
+        android:strokeWidth="3"
+        android:strokeLineJoin="miter"
+        android:pathData="M32.79,32.79 L75.21,32.79 L75.21,75.21 L32.79,75.21 Z" />
     <path
         android:fillColor="#D9B45A"
-        android:pathData="M45,68 L45,52 C45,45.5 50,42 54,37.5 C58,42 63,45.5 63,52 L63,68 Z" />
-    <!-- Crescent and star within the mihrab -->
-    <path
-        android:fillColor="#0B3D2C"
-        android:pathData="M56.04,51.83 A6,6 0 1,0 56.04,62.17 A5.2,5.2 0 1,1 56.04,51.83 Z" />
-    <path
-        android:fillColor="#0B3D2C"
-        android:pathData="M59.2,55.7 A1.3,1.3 0 1,1 59.2,58.3 A1.3,1.3 0 1,1 59.2,55.7 Z" />
+        android:pathData="M55.2,42.06 A12,12 0 1,0 64.77,59.29 A10,10 0 1,1 55.2,42.06 Z" />
 </vector>

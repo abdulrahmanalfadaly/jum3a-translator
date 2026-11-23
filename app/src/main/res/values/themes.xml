@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="window_bg">#08140F</color>
-    <color name="ic_launcher_background">#0B3D2C</color>
+    <!-- The logo sits on no plate: transparent, as asked. -->
+    <color name="ic_launcher_background">#00000000</color>
 
     <style name="Theme.Jum3a" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/window_bg</item>

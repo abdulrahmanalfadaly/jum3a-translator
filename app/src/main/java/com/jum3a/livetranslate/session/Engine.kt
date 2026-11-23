@@ -57,11 +57,17 @@ data class Entry(
     val id: Long,
     val time: Long,
     val durationMs: Long,
+    /** Malay as recognised by Whisper. */
+    val asr: String? = null,
+    /** Malay shown on screen: the recognised text, replaced by the interpreter's repaired version. */
     val malay: String? = null,
     val english: String? = null,
+    val arabic: String? = null,
     val status: EntryStatus = EntryStatus.QUEUED,
     val error: String? = null,
-)
+) {
+    val hasTranslation: Boolean get() = !english.isNullOrBlank() || !arabic.isNullOrBlank()
+}
 
 data class Meter(
     val db: Float = -90f,
@@ -119,6 +125,18 @@ class Engine(
     @Volatile private var lastMalay = ""
     @Volatile private var transcriptFile: File? = null
 
+    // Interpreter memory (only touched by the translation worker, apart from clear()).
+    /** Unfinished Malay held back from the last chunk, completed with the next one. */
+    @Volatile private var carry = ""
+    /** The entry whose text the carry came from; a late flush is appended to it. */
+    @Volatile private var carryEntryId = 0L
+    /** Last entry translated in order; older ids (retries) are translated on their own. */
+    @Volatile private var lastMtId = 0L
+    /** Running summary of the talk: topic, points, names, terms. */
+    @Volatile private var summary = ""
+    private var doneSinceSummary = 0
+    private var summaryJob: Job? = null
+
     init {
         scope.launch { asrWorker() }
         scope.launch { mtWorker() }
@@ -147,6 +165,10 @@ class Engine(
     fun clear() {
         audio.clear()
         lastMalay = ""
+        carry = ""
+        summaryJob?.cancel()
+        summary = ""
+        doneSinceSummary = 0
         transcriptFile = null
         _state.update { it.copy(entries = emptyList(), notice = null) }
     }
@@ -154,7 +176,7 @@ class Engine(
     fun retry(id: Long) {
         val e = find(id) ?: return
         when {
-            e.malay != null -> {
+            e.asr != null -> {
                 updateEntry(id) { it.copy(status = EntryStatus.TRANSLATING, error = null) }
                 mtQueue.trySend(id)
             }
@@ -171,9 +193,10 @@ class Engine(
         appendLine("Jum3a Translate — ${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())}")
         appendLine()
         for (e in _state.value.entries) {
-            if (e.malay == null && e.english == null) continue
+            if (e.malay == null && !e.hasTranslation) continue
             appendLine("[${time.format(Date(e.time))}]")
             e.english?.let { appendLine(it) }
+            e.arabic?.let { appendLine(it) }
             e.malay?.let { appendLine("(Malay) $it") }
             appendLine()
         }
@@ -376,7 +399,7 @@ class Engine(
                     continue
                 }
                 lastMalay = text
-                updateEntry(id) { it.copy(malay = text, status = EntryStatus.TRANSLATING) }
+                updateEntry(id) { it.copy(asr = text, malay = text, status = EntryStatus.TRANSLATING) }
                 mtQueue.send(id)
             } catch (e: CancellationException) {
                 throw e
@@ -387,35 +410,160 @@ class Engine(
         }
     }
 
+    /**
+     * Interprets entries in order, like a human interpreter: each request carries the unfinished
+     * sentence held back last time, the last few interpreted lines and a running summary of the talk.
+     */
     private suspend fun mtWorker() {
-        for (id in mtQueue) {
-            val entry = find(id) ?: continue
-            val malay = entry.malay ?: continue
-            val s = settings.value
-            val context = _state.value.entries
-                .filter { it.id < id && it.english != null && it.malay != null && it.status == EntryStatus.DONE }
-                .takeLast(2)
-                .map { Translator.Context(it.malay!!, it.english!!) }
-            updateEntry(id) { it.copy(status = EntryStatus.TRANSLATING, error = null) }
-            try {
-                val english = translator.translate(s.apiKey, s.modelList(), s.topic, context, malay)
-                updateEntry(id) { it.copy(english = english, status = EntryStatus.DONE) }
-                find(id)?.let { saveToTranscript(it) }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                updateEntry(id) { it.copy(status = EntryStatus.FAILED, error = "Translation failed: ${friendly(e)}") }
-                if (e is GroqException && e.isAuth) _state.update { it.copy(error = friendly(e)) }
+        while (true) {
+            val id = nextForTranslation()
+            if (id == null) {
+                flushCarry() // the held-back sentence never got its ending (pause or Stop)
+                continue
             }
+            translateEntry(id)
         }
     }
+
+    /** The next entry to translate, or null if a held-back sentence has waited too long for its end. */
+    private suspend fun nextForTranslation(): Long? {
+        if (carry.isBlank()) return mtQueue.receive()
+        val deadline = System.currentTimeMillis() + CARRY_FLUSH_MS
+        while (System.currentTimeMillis() < deadline) {
+            mtQueue.tryReceive().getOrNull()?.let { return it }
+            delay(200)
+        }
+        return null
+    }
+
+    private suspend fun translateEntry(id: Long) {
+        val entry = find(id) ?: return
+        val asr = entry.asr ?: return
+        val s = settings.value
+        val inOrder = id > lastMtId // retries of older lines are translated on their own
+        val carryIn = if (inOrder) carry else ""
+        updateEntry(id) { it.copy(status = EntryStatus.TRANSLATING, error = null) }
+        try {
+            val r = translator.translate(
+                s.apiKey,
+                s.modelList(),
+                Translator.Request(
+                    setting = s.topic,
+                    summary = summary,
+                    previous = recentTurns(before = id, count = if (s.target.english && s.target.arabic) 2 else 3),
+                    carry = carryIn,
+                    malay = asr,
+                    target = s.target,
+                    finish = !inOrder,
+                ),
+            )
+            if (inOrder) {
+                lastMtId = id
+                carry = r.carry
+                if (r.carry.isNotBlank()) {
+                    // If the whole chunk was held back, a late flush belongs to the line before it.
+                    carryEntryId = if (r.isEmpty) {
+                        if (carryIn.isNotBlank() && find(carryEntryId) != null) carryEntryId else lastDoneId(before = id)
+                    } else {
+                        id
+                    }
+                }
+            }
+            lastMalay = "${r.malay} ${r.carry}".trim().ifBlank { lastMalay }
+            if (r.isEmpty) {
+                removeEntry(id) // noise, or the whole chunk is held back to finish the sentence next time
+            } else {
+                updateEntry(id) {
+                    it.copy(malay = r.malay.ifBlank { asr }, english = r.english, arabic = r.arabic, status = EntryStatus.DONE)
+                }
+                find(id)?.let { saveToTranscript(it) }
+                maybeUpdateSummary(s)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (inOrder) {
+                // Keep the held-back words with this line, so Retry translates them together.
+                lastMtId = id
+                carry = ""
+                if (carryIn.isNotBlank()) updateEntry(id) { it.copy(asr = "$carryIn $asr", malay = "$carryIn $asr") }
+            }
+            updateEntry(id) { it.copy(status = EntryStatus.FAILED, error = "Translation failed: ${friendly(e)}") }
+            if (e is GroqException && e.isAuth) _state.update { it.copy(error = friendly(e)) }
+        }
+    }
+
+    /** Translates a held-back sentence that never got its ending, and adds it to its line. */
+    private suspend fun flushCarry() {
+        val text = carry
+        if (text.isBlank()) return
+        carry = ""
+        val s = settings.value
+        val line = find(carryEntryId)?.takeIf { it.status == EntryStatus.DONE }
+        try {
+            val r = translator.translate(
+                s.apiKey,
+                s.modelList(),
+                Translator.Request(
+                    setting = s.topic,
+                    summary = summary,
+                    previous = recentTurns(before = Long.MAX_VALUE, count = 2),
+                    carry = "",
+                    malay = text,
+                    target = s.target,
+                    finish = true,
+                ),
+            )
+            if (r.isEmpty) return
+            if (line != null) {
+                updateEntry(line.id) {
+                    it.copy(malay = join(it.malay, r.malay), english = join(it.english, r.english), arabic = join(it.arabic, r.arabic))
+                }
+            } else {
+                val added = Entry(
+                    ids.incrementAndGet(), System.currentTimeMillis(), 0, asr = text,
+                    malay = r.malay, english = r.english, arabic = r.arabic, status = EntryStatus.DONE,
+                )
+                _state.update { it.copy(entries = it.entries + added) }
+            }
+            saveToTranscript(Entry(0, System.currentTimeMillis(), 0, malay = r.malay, english = r.english, arabic = r.arabic))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Keep the words visible even if the translation failed.
+            if (line != null) updateEntry(line.id) { it.copy(malay = join(it.malay, text)) }
+        }
+    }
+
+    /** Every few lines, refresh the running summary in the background (topic, points, names, terms). */
+    private fun maybeUpdateSummary(s: AppSettings) {
+        if (++doneSinceSummary < SUMMARY_EVERY || summaryJob?.isActive == true) return
+        doneSinceSummary = 0
+        val recent = recentTurns(before = Long.MAX_VALUE, count = 6)
+        val current = summary
+        summaryJob = scope.launch {
+            translator.summarize(s.apiKey, Defaults.SUMMARY_MODELS, s.topic, current, recent)?.let { summary = it }
+        }
+    }
+
+    private fun recentTurns(before: Long, count: Int): List<Translator.Turn> =
+        _state.value.entries
+            .filter { it.id < before && it.status == EntryStatus.DONE && it.hasTranslation }
+            .takeLast(count)
+            .map { Translator.Turn(it.malay.orEmpty(), it.english, it.arabic) }
+
+    private fun lastDoneId(before: Long): Long =
+        _state.value.entries.lastOrNull { it.id < before && it.status == EntryStatus.DONE }?.id ?: 0L
+
+    private fun join(a: String?, b: String?): String? =
+        listOfNotNull(a?.takeIf { it.isNotBlank() }, b?.takeIf { it.isNotBlank() }).joinToString(" ").ifBlank { null }
 
     /**
      * Speech recognition with automatic fallback: if the main Whisper model hits its free limit,
      * the backup model (separate quota) is used until the main one is available again.
      */
     private suspend fun transcribe(s: AppSettings, wav: ByteArray, prompt: String): AsrResult {
-        val language = s.language.takeIf { it != "auto" }
+        val language = Defaults.SOURCE_LANGUAGE
         var failures = 0
         var limitWaits = 0
         var lastError: Exception? = null
@@ -471,7 +619,8 @@ class Engine(
                 File(dir, SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US).format(Date(e.time)) + ".txt")
             }.also { transcriptFile = it }
             val t = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(e.time))
-            file.appendText("[$t]\n${e.english}\n(Malay) ${e.malay}\n\n")
+            val lines = listOfNotNull(e.english, e.arabic, e.malay?.let { "(Malay) $it" }).joinToString("\n")
+            file.appendText("[$t]\n$lines\n\n")
         }
     }
 
@@ -496,6 +645,10 @@ class Engine(
 
     companion object {
         private const val MAX_BACKLOG = 40
+        /** A held-back unfinished sentence is translated on its own if no continuation comes in this time. */
+        private const val CARRY_FLUSH_MS = 12_000L
+        /** Refresh the running summary of the talk after this many translated lines. */
+        private const val SUMMARY_EVERY = 4
         /** Soft voices are boosted up to this much; the limiter stops loud ones clipping. */
         private const val MAX_BOOST_DB = 40f
         private const val CLIP_LEVEL = 32_000

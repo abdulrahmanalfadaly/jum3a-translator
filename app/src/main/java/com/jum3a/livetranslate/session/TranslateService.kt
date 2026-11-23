@@ -75,7 +75,7 @@ class TranslateService : Service() {
                     }
                 }
                 Graph.engine.state
-                    .map { st -> st.entries.lastOrNull { it.english != null }?.english }
+                    .map { st -> st.entries.lastOrNull { it.hasTranslation }?.let { it.english ?: it.arabic } }
                     .distinctUntilChanged()
                     .collect { latest ->
                         if (latest != null) {

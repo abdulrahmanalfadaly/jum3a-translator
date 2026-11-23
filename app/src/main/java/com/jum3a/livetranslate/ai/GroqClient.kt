@@ -33,8 +33,25 @@ class GroqException(
 data class AsrSegment(val text: String, val noSpeechProb: Double, val avgLogprob: Double, val compressionRatio: Double)
 data class AsrResult(val text: String, val segments: List<AsrSegment>, val language: String?)
 
+/** Chat completions, separated out so the translator can be tested without the network. */
+interface ChatBackend {
+    /**
+     * @param responseFormat Groq `response_format`, e.g. a strict JSON schema or `{"type":"json_object"}`;
+     *   null for plain text.
+     */
+    suspend fun chat(
+        apiKey: String,
+        model: String,
+        system: String,
+        user: String,
+        temperature: Double = 0.2,
+        maxTokens: Int = 1500,
+        responseFormat: JSONObject? = null,
+    ): String
+}
+
 /** Minimal client for Groq's OpenAI-compatible API (free tier at console.groq.com). */
-class GroqClient(private val http: OkHttpClient) {
+class GroqClient(private val http: OkHttpClient) : ChatBackend {
     private val base = "https://api.groq.com/openai/v1"
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
@@ -75,12 +92,14 @@ class GroqClient(private val http: OkHttpClient) {
         AsrResult(json.optString("text"), segments, json.optString("language").ifBlank { null })
     }
 
-    suspend fun chat(
+    override suspend fun chat(
         apiKey: String,
         model: String,
         system: String,
         user: String,
-        temperature: Double = 0.2,
+        temperature: Double,
+        maxTokens: Int,
+        responseFormat: JSONObject?,
     ): String = withContext(Dispatchers.IO) {
         val payload = JSONObject().apply {
             put("model", model)
@@ -91,7 +110,8 @@ class GroqClient(private val http: OkHttpClient) {
                     .put(JSONObject().put("role", "user").put("content", user)),
             )
             put("temperature", temperature)
-            put("max_completion_tokens", 1500)
+            put("max_completion_tokens", maxTokens)
+            if (responseFormat != null) put("response_format", responseFormat)
             when {
                 // Reasoning models: think briefly and don't send the reasoning back.
                 model.startsWith("openai/gpt-oss") -> {

@@ -14,9 +14,12 @@ and following along in English.
 - **Accurate Malay recognition:** OpenAI Whisper large-v3 via Groq's free API (falling back to
   large-v3-turbo when the free limit is hit), with a vocabulary hint for the type of talk and the
   previous sentence as context, plus a filter for Whisper's typical silence "hallucinations".
-- **Proper translation, not word-for-word:** an LLM (GPT-OSS 120B on Groq, with automatic fallback to
-  other free models) translates each sentence using the previous ones as context, fixes
-  mis-heard words, keeps Islamic terms recognisable and marks Arabic recitation.
+- **Interprets like a person, into English, Arabic or both:** an LLM (GPT-OSS 120B on Groq, with
+  automatic fallback to other free models) first repairs the speech-recognition errors, then
+  translates only complete sentences, holding back a sentence that is cut off mid-way until its end
+  arrives. It sees the last few lines and a running summary of the talk (topic, names, terms), so
+  references and terminology stay consistent. Arabic is Modern Standard Arabic in khutbah style.
+  Quran recitation is marked, never quoted from memory; the speaker's explanation is translated.
 - Works with the screen off (foreground service), keeps the screen on if you prefer, saves every
   transcript on the phone, and can share it as text.
 - **Updates itself from GitHub**: every push to `main` builds a signed APK and publishes it as a
@@ -73,7 +76,7 @@ edit code → git push → GitHub Actions builds "build-N" → phone: Update →
 | `audio/AudioUtil.kt` | Loudness normalisation with soft limiter, WAV encoding |
 | `ai/GroqClient.kt` | Groq API: Whisper transcription, chat completions, model list |
 | `ai/AsrFilter.kt` | Drops silence hallucinations ("Terima kasih kerana menonton", …) |
-| `ai/Translator.kt` | Context-aware translation prompt, model fallback and rate-limit cooldown |
+| `ai/Translator.kt` | Interpreter: ASR repair, sentence hold-back, context + running summary, EN/AR, model fallback |
 | `session/Engine.kt` | Pipeline: mic → chunks → transcription queue → translation queue → UI; mic recovery and hints |
 | `session/TranslateService.kt` | Foreground service so it keeps listening with the screen off |
 | `update/UpdateManager.kt` | Checks GitHub releases, downloads and installs updates |

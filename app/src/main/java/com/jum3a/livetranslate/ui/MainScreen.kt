@@ -45,6 +45,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
@@ -76,6 +77,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -197,8 +199,8 @@ private fun TranscriptList(state: EngineState, settings: AppSettings, modifier: 
         }
     }
     // Follow the newest line, unless the user has scrolled up to re-read something.
-    val lastEnglish = entries.lastOrNull()?.english
-    LaunchedEffect(entries.size, lastEnglish) {
+    val lastText = entries.lastOrNull()?.let { "${it.english}${it.arabic}" }
+    LaunchedEffect(entries.size, lastText) {
         if (entries.isNotEmpty() && atBottom) listState.animateScrollToItem(entries.size)
     }
 
@@ -233,15 +235,29 @@ private fun EntryItem(e: Entry, settings: AppSettings) {
     Column(Modifier.fillMaxWidth()) {
         Text(time, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant.copy(alpha = 0.55f))
         Spacer(Modifier.height(2.dp))
-        when {
-            e.english != null -> Text(
-                e.english,
+        e.english?.let {
+            Text(
+                it,
                 fontSize = (19 * scale).sp,
                 lineHeight = (27 * scale).sp,
                 fontWeight = FontWeight.Medium,
                 color = colors.onBackground,
             )
-            e.status != EntryStatus.FAILED -> Text(
+        }
+        e.arabic?.let {
+            if (e.english != null) Spacer(Modifier.height(6.dp))
+            Text(
+                it,
+                fontSize = (21 * scale).sp,
+                lineHeight = (34 * scale).sp,
+                fontWeight = FontWeight.Medium,
+                color = colors.onBackground,
+                style = LocalTextStyle.current.copy(textDirection = TextDirection.Rtl),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (!e.hasTranslation && e.status != EntryStatus.FAILED) {
+            Text(
                 if (e.malay == null) "Recognising speech…" else "Translating…",
                 fontSize = (16 * scale).sp,
                 fontStyle = FontStyle.Italic,

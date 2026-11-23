@@ -84,4 +84,11 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for unit tests (Android's copy is only a stub off-device).
+    testImplementation("org.json:json:20240303")
+}
+
+// The live translation test (only runs when GROQ_API_KEY is set) prints its translations.
+tasks.withType<Test>().configureEach {
+    if (!System.getenv("GROQ_API_KEY").isNullOrBlank()) testLogging.showStandardStreams = true
 }

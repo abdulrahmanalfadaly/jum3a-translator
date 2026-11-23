@@ -51,10 +51,28 @@ enum class Pace(val title: String, val detail: String, val minSegMs: Int, val ma
     ACCURATE("Accurate", "Longer pieces give the AI more context; English comes a few seconds later.", 13_000, 24_000),
 }
 
+/** The language(s) the Malay speech is translated into. */
+enum class TargetLang(val title: String, val english: Boolean, val arabic: Boolean) {
+    ENGLISH("English", english = true, arabic = false),
+    ARABIC("العربية", english = false, arabic = true),
+    BOTH("Both", english = true, arabic = true),
+}
+
 object Defaults {
+    /** The speech is always Malay. */
+    const val SOURCE_LANGUAGE = "ms"
+
     /** Tried in order; each has its own free quota on Groq, so the second extends the daily limit. */
     val ASR_MODELS = listOf("whisper-large-v3", "whisper-large-v3-turbo")
-    const val TRANSLATION_MODELS = "openai/gpt-oss-120b, openai/gpt-oss-20b, llama-3.3-70b-versatile"
+
+    /** Translation: strongest first. Each has its own free daily token quota, so the chain also extends it. */
+    const val TRANSLATION_MODELS = "openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b, llama-3.3-70b-versatile"
+
+    /** The previous default, replaced automatically if the user never changed it. */
+    const val OLD_TRANSLATION_MODELS = "openai/gpt-oss-120b, openai/gpt-oss-20b, llama-3.3-70b-versatile"
+
+    /** Small, fast models for keeping the running summary of the talk. */
+    val SUMMARY_MODELS = listOf("llama-3.1-8b-instant", "openai/gpt-oss-20b")
 }
 
 data class AppSettings(
@@ -62,8 +80,7 @@ data class AppSettings(
     val talkType: TalkType = TalkType.KHUTBAH,
     /** Optional names or words to expect (speaker, place, subject). Helps recognition and translation. */
     val notes: String = "",
-    /** "ms" to force Malay, "auto" to let the model detect the language. */
-    val language: String = "ms",
+    val target: TargetLang = TargetLang.ENGLISH,
     val pace: Pace = Pace.BALANCED,
     val micSource: MicSource = MicSource.AUTO,
     /** Winner of "Find the best microphone"; used first by [MicSource.AUTO]. */
@@ -117,7 +134,7 @@ class SettingsStore(context: Context) {
             apiKey = prefs.getString("apiKey", d.apiKey) ?: d.apiKey,
             talkType = enumPref("talkType", d.talkType),
             notes = prefs.getString("notes", d.notes) ?: d.notes,
-            language = prefs.getString("language", d.language) ?: d.language,
+            target = enumPref("target", d.target),
             pace = enumPref("pace", d.pace),
             micSource = enumPref("micSource", d.micSource),
             testedSource = prefs.getString("testedSource", null)
@@ -126,7 +143,8 @@ class SettingsStore(context: Context) {
             autoSensitivity = prefs.getBoolean("autoSensitivity", d.autoSensitivity),
             sensitivity = prefs.getFloat("sensitivity", d.sensitivity),
             phoneProcessing = prefs.getBoolean("phoneProcessing", d.phoneProcessing),
-            translationModels = prefs.getString("translationModels", d.translationModels) ?: d.translationModels,
+            translationModels = (prefs.getString("translationModels", d.translationModels) ?: d.translationModels)
+                .let { if (it == Defaults.OLD_TRANSLATION_MODELS) Defaults.TRANSLATION_MODELS else it },
             fontScale = prefs.getFloat("fontScale", d.fontScale),
             showMalay = prefs.getBoolean("showMalay", d.showMalay),
             keepScreenOn = prefs.getBoolean("keepScreenOn", d.keepScreenOn),
@@ -138,7 +156,8 @@ class SettingsStore(context: Context) {
         putString("apiKey", s.apiKey)
         putString("talkType", s.talkType.name)
         putString("notes", s.notes)
-        putString("language", s.language)
+        remove("language") // the speech is always Malay now
+        putString("target", s.target.name)
         putString("pace", s.pace.name)
         putString("micSource", s.micSource.name)
         if (s.testedSource != null) putString("testedSource", s.testedSource.name) else remove("testedSource")
